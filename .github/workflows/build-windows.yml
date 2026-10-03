@@ -1,0 +1,53 @@
+name: Build Windows Binary
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]"
+
+      - name: Build with PyInstaller
+        run: pyinstaller snapsort.spec --clean --noconfirm
+
+      - name: Verify binary exists
+        run: |
+          if (-Not (Test-Path "dist\SnapSort\SnapSort.exe")) {
+            Write-Error "Build failed: SnapSort.exe not found"
+            exit 1
+          }
+        shell: pwsh
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SnapSort-windows-${{ github.ref_name }}
+          path: dist\SnapSort\
+          retention-days: 30
+
+      - name: Create GitHub Release (on version tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist\SnapSort\*
+          generate_release_notes: true

@@ -1,0 +1,59 @@
+# pyproject.toml — SnapSort packaging metadata (review 5.2)
+#
+# Use `uv` for reproducible builds:
+#   uv venv && uv pip install -e .
+#   uv pip install -e ".[dev]"
+#   uv run pytest
+#
+# The app stays a flat set of modules (import organizer, import ui, ...);
+# nothing here forces a src/ layout. Packaging uses snapsort.spec (PyInstaller).
+
+[project]
+name = "snapsort"
+version = "0.1.0"
+description = "Local auto-organizing photo culler (organize by date/GPS, then cull duplicates)."
+requires-python = ">=3.9"
+license = { text = "Proprietary" }
+dependencies = [
+    "Pillow>=10.3.0",
+    "pillow-heif>=0.16.0",           # HEIC/HEIF support (Apache-2.0)
+    "numpy>=1.26.0",
+    "opencv-python-headless>=4.9.0", # no Qt GUI bindings; ~15 MB smaller
+    "imagehash>=4.3.1",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pyinstaller>=6.6",
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "piexif>=1.1.3",
+]
+
+# `uv`-style dependency groups (pip ignores these; [dev] above is the pip path).
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.6",
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+    "piexif>=1.1.3",
+]
+
+[project.scripts]
+snapsort = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = [
+    "analysis_cache", "analyzer", "clustering", "config",
+    "journal", "logging_setup", "main", "metadata",
+    "organizer", "paths", "quality", "ui", "widgets",
+]
