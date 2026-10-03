@@ -172,7 +172,7 @@ class PhotoCullerUI(tk.Toplevel):
         legend.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(0, 12))
         tk.Label(
             legend,
-            text="Stage 1 — [D] Discard blurry   [Space] Keep   [S/→] Skip"
+            text="Stage 1 — [D] Discard   [Space] Keep   [S/→] Skip"
                  "      ‖      "
                  "Stage 2 — [1/2/3] Keep photo   [Space] Best pick   [S/→] Skip"
                  "      ‖      [U] Undo   [Q] Quit",
@@ -356,31 +356,43 @@ class PhotoCullerUI(tk.Toplevel):
         label_fg = "#ef5350" if is_bad else BEST_FG
         pane = tk.Frame(self.stage, bg=bg, padx=6, pady=6)
         pane.grid(row=0, column=col, sticky="nsew", padx=6)
+        pane.grid_columnconfigure(0, weight=1)
+        pane.grid_rowconfigure(2, weight=1)   # image row soaks up the space
         self._thumb_frames.append(pane)
 
-        badge = "⚠  LOW QUALITY — [D] DISCARD" if is_bad else "✓  BEST AVAILABLE ALTERNATIVE"
+        # Row 0: badge — centered, no key hint (covered by legend)
+        badge = "⚠  LOW QUALITY" if is_bad else "✓  BEST AVAILABLE ALTERNATIVE"
         tk.Label(pane, text=badge, bg=bg, fg=label_fg,
-                 font=("Helvetica", 11, "bold")).pack(anchor="w", padx=4)
+                 font=("Helvetica", 11, "bold"), anchor="center").grid(
+            row=0, column=0, sticky="ew", padx=4, pady=(8, 2))
 
-        thumb = make_thumbnail(metric.path)
+        # Row 1: quality metrics — immediately under badge
+        sharp = f"{metric.sharpness:,.0f}" if metric.sharpness is not None else "n/a"
+        tilt = f"{metric.tilt_score:.1f}°" if metric.tilt_score is not None else "n/a"
+        tk.Label(pane, text=f"Sharpness {sharp}   Tilt {tilt}",
+                 bg=bg, fg=FG, font=("Helvetica", 10), anchor="center").grid(
+            row=1, column=0, sticky="ew", padx=4, pady=(0, 8))
+
+        # Row 2: image — fills remaining vertical space, centered
         thumb_frame = tk.Frame(pane, bg="#111111")
-        thumb_frame.pack(padx=4, pady=(2, 4))
+        thumb_frame.grid(row=2, column=0, sticky="nsew", padx=4)
+        thumb_frame.grid_columnconfigure(0, weight=1)
+        thumb_frame.grid_rowconfigure(0, weight=1)
+        thumb = make_thumbnail(metric.path)
         if thumb:
             self._photo_refs.append(thumb)
             lbl = tk.Label(thumb_frame, image=thumb, bg="#111111")
             lbl.image = thumb   # prevent GC before Tk renders
-            lbl.pack()
+            lbl.grid(row=0, column=0)
         else:
             tk.Label(thumb_frame, text="[unavailable]", bg="#111111", fg=DIM,
-                     font=("Helvetica", 11)).pack(padx=40, pady=40)
+                     font=("Helvetica", 11)).grid(row=0, column=0, padx=40, pady=40)
 
-        sharp = f"{metric.sharpness:,.0f}" if metric.sharpness is not None else "n/a"
-        tilt = f"{metric.tilt_score:.1f}°" if metric.tilt_score is not None else "n/a"
-        tk.Label(pane, text=f"Sharpness {sharp}   Tilt {tilt}",
-                 bg=bg, fg=FG, font=("Helvetica", 10)).pack(anchor="w", padx=4)
+        # Row 3: filename — anchored below image
         tk.Label(pane, text=Path(metric.path).name, bg=bg, fg=DIM,
-                 font=("Helvetica", 9), anchor="w", wraplength=THUMB_WIDTH).pack(
-            anchor="w", padx=4, pady=(0, 2))
+                 font=("Helvetica", 9), anchor="center",
+                 wraplength=THUMB_WIDTH).grid(
+            row=3, column=0, sticky="ew", padx=4, pady=(4, 8))
 
     def _on_quality_discard(self) -> None:
         """Stage 1: move the bad photo to _Discarded."""
