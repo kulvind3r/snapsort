@@ -54,6 +54,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 py-modules = [
     "analysis_cache", "analyzer", "clustering", "config",
-    "journal", "logging_setup", "main", "metadata",
+    "journal", "launcher", "logging_setup", "main", "metadata",
     "organizer", "paths", "quality", "ui", "widgets",
 ]

@@ -44,6 +44,7 @@ a = Analysis(
         "tkinter.ttk",
         "tkinter.filedialog",
         "tkinter.messagebox",
+        "launcher",
     ],
     hookspath=[],
     noarchive=False,

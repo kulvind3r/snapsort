@@ -27,7 +27,6 @@ import config as snapsort_config
 import logging_setup
 from organizer import organize_directory, summarize_clusters, discover_photos
 from ui import run_culler, pick_folder_and_run
-
 logger = logging.getLogger("snapsort.main")
 
 
@@ -122,6 +121,13 @@ def _run_stage1(source_dir: str, output_dir: str | None,
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Frozen GUI binary (no console) → open the launcher window directly.
+    if not _has_console() and argv is None:
+        logging_setup.setup_logging()
+        from launcher import run_launcher
+        run_launcher()
+        return 0
+
     parser = argparse.ArgumentParser(
         prog="snapsort",
         description="Local auto-organizing photo culler "
@@ -163,28 +169,11 @@ def main(argv: list[str] | None = None) -> int:
             print("Selecting organized folder to cull...")
             pick_folder_and_run()
             return 0
-        if _has_console():
-            try:
-                source_dir = input("Enter source photos directory: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                print("\nAborted.")
-                return 1
-        else:
-            # Frozen GUI build: use a folder picker dialog.
-            import tkinter as _tk
-            from tkinter import filedialog as _fd
-            root = _tk.Tk()
-            root.withdraw()
-            root.update()
-            source_dir = _fd.askdirectory(
-                title="Select source photos folder",
-                initialdir=str(Path.home()),
-                parent=root,
-            )
-            root.destroy()
-            if not source_dir:
-                logger.info("User cancelled source folder selection.")
-                return 0
+        try:
+            source_dir = input("Enter source photos directory: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return 1
     if not source_dir:
         print("No source directory provided. Aborting.")
         return 1
