@@ -70,13 +70,13 @@ class SimilarityCluster:
         return min(analyzable, key=ImageMetrics.recommendation_rank)
 
     def sorted_members(self) -> List[ImageMetrics]:
-        """Best pick first, then rest by rank, capped at display limit."""
+        """Return all members sorted by quality: best pick first."""
         best = self.best_pick()
         rest = sorted(
             [m for m in self.members if m is not best],
             key=ImageMetrics.recommendation_rank,
         )
-        return ([best] if best else []) + rest[:IMAGES_PER_CLUSTER_MAX - (1 if best else 0)]
+        return ([best] if best else []) + rest
 
 
 LOW_SHARPNESS_THRESHOLD = 80.0

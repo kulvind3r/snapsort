@@ -9,6 +9,7 @@ This module owns pHash computation, union-find clustering, and the top-level
 from __future__ import annotations
 
 import logging
+import math
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -54,6 +55,12 @@ except ImportError:
 
 HASH_HAMMING_THRESHOLD = 10
 PHASH_SIZE = 16
+
+# Colour-histogram clustering constants
+HISTOGRAM_BINS = 16          # bins per channel  (16×3 = 48 floats total)
+HISTOGRAM_SIMILARITY_THRESHOLD = 0.80
+# Bhattacharyya coefficient ≥ this → same-scene cluster.
+# Configurable via snapsort.toml [clustering] histogram_threshold.
 
 
 def get_phash_hex(image_path: str) -> Optional[str]:
@@ -249,45 +256,155 @@ def find_quality_issues(
     return issues
 
 
+def get_color_histogram(image_path: str) -> Optional[List[float]]:
+    """Return a normalised RGB histogram (``HISTOGRAM_BINS`` bins per channel).
+
+    Uses PIL so no OpenCV dependency.  Returns None on failure.
+    """
+    if Image is None:
+        return None
+    try:
+        src = Image.open(image_path)
+        src.load()
+        src = src.resize((96, 96), Image.LANCZOS)
+        if src.mode != "RGB":
+            src = src.convert("RGB")
+        raw = src.histogram()  # 256 * 3 values: R then G then B
+        factor = 256 // HISTOGRAM_BINS
+        combined: List[float] = []
+        for ch in range(3):
+            offset = ch * 256
+            combined += [
+                sum(raw[offset + i * factor: offset + (i + 1) * factor])
+                for i in range(HISTOGRAM_BINS)
+            ]
+        total = sum(combined) or 1
+        return [v / total for v in combined]
+    except Exception:
+        logger.debug("Histogram failed for %s", image_path, exc_info=True)
+        return None
+
+
+def histogram_similarity(h1: List[float], h2: List[float]) -> float:
+    """Bhattacharyya coefficient ∈ [0, 1].  1 = identical distribution."""
+    return sum(math.sqrt(a * b) for a, b in zip(h1, h2))
+
+
+def _cluster_by_histogram(
+    file_paths: List[str],
+    threshold: float = HISTOGRAM_SIMILARITY_THRESHOLD,
+) -> List[List[str]]:
+    """Union-find clustering on colour-histogram Bhattacharyya similarity."""
+    n = len(file_paths)
+    histograms = [get_color_histogram(p) for p in file_paths]
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        if histograms[i] is None:
+            continue
+        for j in range(i + 1, n):
+            if histograms[j] is None:
+                continue
+            if histogram_similarity(histograms[i], histograms[j]) >= threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[rj] = ri
+
+    buckets: Dict[int, List[str]] = {}
+    for i in range(n):
+        buckets.setdefault(find(i), []).append(file_paths[i])
+    return list(buckets.values())
+
+
+def get_histogram_clusters(
+    folder_path: str,
+    config: Optional[dict] = None,
+    cache: Optional[AnalysisCache] = None,
+) -> List[SimilarityCluster]:
+    """Cluster images in *folder_path* by colour-histogram similarity.
+
+    Only images that end up in a multi-photo group have full
+    ``ImageMetrics`` computed (sharpness/tilt via OpenCV) so the expensive
+    CV pass is skipped for photos with no near-duplicates.
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        return []
+    files = sorted(
+        str(p) for p in folder.iterdir()
+        if p.is_file() and _is_analyzable_file(str(p))
+    )
+    if not files:
+        return []
+
+    threshold = float(
+        (config or {}).get("clustering", {}).get(
+            "histogram_threshold", HISTOGRAM_SIMILARITY_THRESHOLD
+        )
+    )
+    groups = _cluster_by_histogram(files, threshold=threshold)
+    multi = [g for g in groups if len(g) >= 2]
+    if not multi:
+        return []
+
+    # Compute full ImageMetrics only for photos that are in a cluster
+    needed = {p for g in multi for p in g}
+    metrics_map: Dict[str, ImageMetrics] = {
+        p: analyze_image(p, cache=cache) for p in needed
+    }
+    clusters = [
+        SimilarityCluster(folder=folder_path, members=[metrics_map[p] for p in g])
+        for g in multi
+    ]
+    clusters.sort(key=lambda c: len(c.members), reverse=True)
+    logger.info("Histogram clusters in %s: %d", folder_path, len(clusters))
+    return clusters
+
+
 def analyze_directory_full(
     root_path: str,
     progress_cb=None,
     use_cache: bool = True,
     config: Optional[dict] = None,
-) -> "tuple[List[QualityReviewItem], List[SimilarityCluster]]":
-    """Recursively analyze image folders for both quality issues and similarity clusters.
+) -> "tuple[List[SimilarityCluster], List[QualityReviewItem]]":
+    """Recursively analyse image folders for near-duplicate clusters and quality issues.
 
-    Runs both passes per folder in a single scan so the cache is shared
-    and images are analyzed only once.
+    Step order returned matches review order:
+      1. ``SimilarityCluster`` list — colour-histogram based near-duplicate groups.
+      2. ``QualityReviewItem`` list — blurry / shaky photos with alternatives.
 
-    ``progress_cb(done, total, new_issues, new_clusters)`` is called after
-    each folder so the UI can stream results immediately.
-
-    Returns ``(quality_issues, clusters)`` tuple.
+    ``progress_cb(done, total, new_clusters, new_issues)`` is called after each
+    folder so the UI can stream results as they arrive.
     """
     root_path = str(Path(root_path).expanduser().absolute())
     cache: Optional[AnalysisCache] = AnalysisCache(root_path) if use_cache else None
     folders = _iter_folders_with_images(root_path)
     total = len(folders)
-    all_quality: List[QualityReviewItem] = []
     all_clusters: List[SimilarityCluster] = []
+    all_quality: List[QualityReviewItem] = []
     if total:
         logger.info("Full analysis: %d folders under %s", total, root_path)
     for i, dirpath in enumerate(folders, start=1):
+        clusters = get_histogram_clusters(dirpath, config=config, cache=cache)
+        all_clusters.extend(clusters)
         issues = find_quality_issues(dirpath, cache=cache, config=config)
         all_quality.extend(issues)
-        clusters = get_similarity_clusters(dirpath, cache=cache, config=config)
-        all_clusters.extend(clusters)
         if progress_cb is not None:
             try:
-                progress_cb(i, total, issues, clusters)
+                progress_cb(i, total, clusters, issues)
             except Exception:
                 logger.debug("progress_cb error", exc_info=True)
     if cache is not None:
         if total:
             logger.info("Cache: %d hits, %d misses", cache.hits, cache.misses)
         cache.save()
-    return all_quality, all_clusters
+    return all_clusters, all_quality
 
 
 def _iter_folders_with_images(root_path: str) -> List[str]:

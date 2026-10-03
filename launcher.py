@@ -117,13 +117,12 @@ class LauncherUI(tk.Tk):
 
         tk.Label(c_cull, text="Cull", bg=_CARD_BG, fg=FG,
                  font=("Helvetica", 15, "bold")).pack(anchor="w")
-        tk.Label(
+        self._card_desc(
             c_cull,
-            text="Remove blurry, shaky, and duplicate photos.\n"
-                 "Works best on the original unsorted folder —\n"
-                 "finds more similar photos before they are split.",
-            bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
-        ).pack(anchor="w", pady=(8, 14))
+            "Remove blurry, shaky, and duplicate photos. "
+            "Works best on the original unsorted folder — "
+            "finds more similar photos before they are split.",
+        )
 
         self._cull_btn = self._make_btn(c_cull, "Start Culling", self._start_cull)
         self._cull_btn.pack(fill=tk.X, ipady=8)
@@ -134,13 +133,12 @@ class LauncherUI(tk.Tk):
 
         tk.Label(c_org, text="Organise", bg=_CARD_BG, fg=FG,
                  font=("Helvetica", 15, "bold")).pack(anchor="w")
-        tk.Label(
+        self._card_desc(
             c_org,
-            text="Sort photos into dated event and trip folders\n"
-                 "using EXIF date and GPS coordinates.\n"
-                 "Can be run on any folder, before or after culling.",
-            bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
-        ).pack(anchor="w", pady=(8, 14))
+            "Sort photos into dated event and trip folders "
+            "using EXIF date and GPS coordinates. "
+            "Can be run on any folder, before or after culling.",
+        )
 
         self._org_btn = self._make_btn(c_org, "Start Organising", self._start_organise)
         self._org_btn.pack(fill=tk.X, ipady=8)
@@ -164,6 +162,20 @@ class LauncherUI(tk.Tk):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _card_desc(self, parent: tk.Widget, text: str) -> tk.Label:
+        """Description label that auto-wraps to the card's actual rendered width."""
+        lbl = tk.Label(
+            parent, text=text, bg=_CARD_BG, fg=DIM,
+            font=("Helvetica", 9), justify=tk.LEFT, wraplength=220,
+            anchor="w",
+        )
+        lbl.pack(fill=tk.X, pady=(8, 14))
+        lbl.bind(
+            "<Configure>",
+            lambda e, l=lbl: l.configure(wraplength=max(80, e.width - 4)),
+        )
+        return lbl
 
     def _make_btn(self, parent: tk.Widget, text: str, cmd) -> tk.Button:
         return tk.Button(
