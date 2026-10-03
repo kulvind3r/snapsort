@@ -108,7 +108,15 @@ class AnalysisCache:
 
     def lookup(self, path: str) -> Optional[dict]:
         """Return the cached metrics dict for ``path`` if still valid,
-        else None (and record a miss)."""
+        else None (and record a miss).
+
+        Entries created by :meth:`set_histogram` that have not yet had full
+        quality metrics (sharpness, pHash) computed are marked
+        ``"analyzed": False`` and are treated as misses here so that
+        :func:`analyze_image` falls through to full computation.
+        Old-format entries (no ``"analyzed"`` key) are assumed complete for
+        backward compatibility.
+        """
         entry = self._entries.get(str(Path(path).absolute()))
         if entry is None:
             self.misses += 1
@@ -118,6 +126,10 @@ class AnalysisCache:
             self.misses += 1
             return None
         if (entry.get("mtime"), entry.get("size")) != key:
+            self.misses += 1
+            return None
+        # Histogram-only stub: not yet fully analyzed
+        if entry.get("analyzed") is False:
             self.misses += 1
             return None
         self.hits += 1
@@ -177,8 +189,13 @@ class AnalysisCache:
         abs_path = str(Path(path).absolute())
         entry = self._entries.get(abs_path)
         if entry is None or (entry.get("mtime"), entry.get("size")) != key:
-            # Either brand-new or stale — start a fresh entry
-            entry = {"mtime": key[0], "size": key[1]}
+            # Either brand-new or stale — start a fresh stub.
+            # Mark "analyzed": False so that analyze_image treats this as a
+            # cache miss and computes full metrics (sharpness, pHash, tilt).
+            # Once analyze_image writes a full entry via update(), the
+            # "analyzed" key is absent (old format = complete), so lookup()
+            # will return it as a hit.
+            entry = {"mtime": key[0], "size": key[1], "analyzed": False}
             self._entries[abs_path] = entry
         entry["histogram"] = histogram
         self._dirty = True
