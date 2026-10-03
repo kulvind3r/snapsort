@@ -138,9 +138,13 @@ class PhotoCullerUI(tk.Toplevel):
                 def analysis_cb(done, total, new_clusters, new_issues):
                     self._msg_q.put(("batch", done, total, new_clusters, new_issues))
 
+                def scan_cb(images_done: int, images_total: int) -> None:
+                    self._msg_q.put(("scan_progress", images_done, images_total))
+
                 all_clusters, all_quality = analyze_directory_full(
                     self.organized_folder,
                     progress_cb=analysis_cb,
+                    scan_progress_cb=scan_cb,
                     config=cfg,
                 )
                 self._msg_q.put(("done", all_clusters, all_quality))
@@ -179,6 +183,14 @@ class PhotoCullerUI(tk.Toplevel):
             self._show_dedup_summary(groups, discarded)
             # Auto-advance to cluster stage after 2 s (or immediately if clusters arrive)
             self.after(2000, self._maybe_enter_cluster_stage)
+
+        elif kind == "scan_progress":
+            _, done, total = msg
+            if total:
+                self.progress_bar.configure(maximum=total, value=done)
+            self.status_var.set(
+                f"Step 2/3: Computing image histograms… {done}/{total}"
+            )
 
         elif kind == "batch":
             _, done, total, new_clusters, new_issues = msg

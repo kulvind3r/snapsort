@@ -150,3 +150,35 @@ class AnalysisCache:
         if stale:
             self._dirty = True
             logger.info("Pruned %d stale cache entries", len(stale))
+
+    # ------------------------------------------------------------------
+    # Colour-histogram helpers
+    # ------------------------------------------------------------------
+
+    def get_histogram(self, path: str) -> "Optional[list]":
+        """Return the cached colour histogram for *path* if still valid, else None."""
+        entry = self._entries.get(str(Path(path).absolute()))
+        if entry is None:
+            return None
+        key = self._file_key(path)
+        if key is None or (entry.get("mtime"), entry.get("size")) != key:
+            return None
+        return entry.get("histogram")   # None if not yet stored
+
+    def set_histogram(self, path: str, histogram: list) -> None:
+        """Persist *histogram* (list of floats) inside the cache entry for *path*.
+
+        Creates a minimal entry if none exists yet; refreshes mtime/size if the
+        file changed since the last full analysis.
+        """
+        key = self._file_key(path)
+        if key is None:
+            return
+        abs_path = str(Path(path).absolute())
+        entry = self._entries.get(abs_path)
+        if entry is None or (entry.get("mtime"), entry.get("size")) != key:
+            # Either brand-new or stale — start a fresh entry
+            entry = {"mtime": key[0], "size": key[1]}
+            self._entries[abs_path] = entry
+        entry["histogram"] = histogram
+        self._dirty = True
