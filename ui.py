@@ -22,7 +22,13 @@ from typing import List, Optional
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from analyzer import ImageMetrics, SimilarityCluster, analyze_directory
+from analyzer import (
+    ImageMetrics,
+    SimilarityCluster,
+    analyze_directory,
+    analyze_directory_full,
+    QualityReviewItem,
+)
 import config
 import journal
 import logging_setup
@@ -48,6 +54,9 @@ class PhotoCullerUI(tk.Tk):
         self.organized_folder = str(Path(organized_folder).expanduser().absolute())
         self.queue: List[SimilarityCluster] = []
         self.queue_index = 0
+        self._quality_queue: List[QualityReviewItem] = []
+        self._quality_index = 0
+        self._stage = 1          # 1 = quality review, 2 = cluster review
         self._analysis_done = False
         self._msg_q: "_queue.Queue" = _queue.Queue()
         self.undo_stack = journal.load_undo_stack(self.organized_folder)
@@ -70,20 +79,20 @@ class PhotoCullerUI(tk.Tk):
 
         def _worker() -> None:
             try:
-                per_folder = analyze_directory(
+                cfg = config.load_config(self.organized_folder)
+
+                def on_progress(done, total, new_issues, new_clusters):
+                    self._msg_q.put(("batch", done, total, new_issues, new_clusters))
+
+                all_quality, all_clusters = analyze_directory_full(
                     self.organized_folder,
-                    progress_cb=lambda done, total: self._msg_q.put(("progress", done, total)),
-                    config=config.load_config(self.organized_folder),
+                    progress_cb=on_progress,
+                    config=cfg,
                 )
+                self._msg_q.put(("done", all_quality, all_clusters))
             except Exception as exc:
                 logger.exception("Analysis failed: %s", self.organized_folder)
                 self._msg_q.put(("error", str(exc), 0))
-                return
-            clusters: List[SimilarityCluster] = []
-            for folder_clusters in per_folder.values():
-                clusters.extend(folder_clusters)
-            clusters.sort(key=lambda c: (c.folder, -len(c.members)))
-            self._msg_q.put(("done", clusters, 0))
 
         threading.Thread(target=_worker, daemon=True, name="snapsort-analysis").start()
 
@@ -98,20 +107,44 @@ class PhotoCullerUI(tk.Tk):
 
     def _handle_analysis_msg(self, msg: tuple) -> None:
         kind = msg[0]
-        if kind == "progress":
-            _, done, total = msg
+        if kind == "batch":
+            _, done, total, new_issues, new_clusters = msg
             if total:
                 self.progress_bar.configure(maximum=total, value=done)
                 self.status_var.set(f"Analyzing… folder {done}/{total}")
+            # Stream: show first items as soon as they arrive
+            had_quality = bool(self._quality_queue)
+            had_clusters = bool(self.queue)
+            self._quality_queue.extend(new_issues)
+            self.queue.extend(new_clusters)
+            if not had_quality and self._quality_queue and self._stage == 1:
+                self._load_quality_item()
+            elif not had_clusters and self.queue and self._stage == 2:
+                self._load_current()
+        elif kind == "done":
+            _, all_quality, all_clusters = msg
+            # Merge any remaining items not yet added via batch (edge case)
+            existing_bad = {qi.bad.path for qi in self._quality_queue}
+            existing_cl = {id(c) for c in self.queue}
+            for qi in all_quality:
+                if qi.bad.path not in existing_bad:
+                    self._quality_queue.append(qi)
+            for cl in all_clusters:
+                if id(cl) not in existing_cl:
+                    self.queue.append(cl)
+            self._analysis_done = True
+            self.progress_bar["value"] = self.progress_bar["maximum"]
+            # If nothing is showing yet, bootstrap the stages now
+            if not self._quality_queue and not self.queue:
+                self._show_empty_state()
+            elif self._stage == 1 and self._quality_index >= len(self._quality_queue):
+                self._enter_stage2()
+            elif self._stage == 2 and self.queue_index >= len(self.queue):
+                self._show_empty_state()
         elif kind == "error":
             self._analysis_done = True
             messagebox.showerror("SnapSort", f"Analysis failed:\n{self.organized_folder}", parent=self)
             self._show_empty_state()
-        else:
-            self.queue = list(msg[1])
-            self._analysis_done = True
-            self.progress_bar["value"] = self.progress_bar["maximum"]
-            self._load_current() if self.queue else self._show_empty_state()
 
     # ------------------------------------------------------------------
     # Widget construction
@@ -137,7 +170,10 @@ class PhotoCullerUI(tk.Tk):
         legend.pack(side=tk.BOTTOM, fill=tk.X, padx=16, pady=(0, 12))
         tk.Label(
             legend,
-            text="[1/2/3] Keep photo      [Space] Best pick      [S/→] Skip      [U] Undo      [Q] Quit",
+            text="Stage 1 — [D] Discard blurry   [Space] Keep   [S/→] Skip"
+                 "      ‖      "
+                 "Stage 2 — [1/2/3] Keep photo   [Space] Best pick   [S/→] Skip"
+                 "      ‖      [U] Undo   [Q] Quit",
             bg=PANEL_BG, fg=DIM, font=("Helvetica", 10), anchor="w",
         ).pack(fill=tk.X, padx=8, pady=6)
 
@@ -151,6 +187,8 @@ class PhotoCullerUI(tk.Tk):
         for key, idx in [("<KeyPress-1>", 0), ("<KeyPress-2>", 1), ("<KeyPress-3>", 2)]:
             self.bind(key, lambda e, i=idx: self._on_keep(i))
         self.bind("<space>", lambda e: self._on_auto())
+        self.bind("<KeyPress-d>", lambda e: self._on_quality_discard())
+        self.bind("<KeyPress-D>", lambda e: self._on_quality_discard())
         self.bind("<KeyPress-s>", lambda e: self._on_skip())
         self.bind("<KeyPress-S>", lambda e: self._on_skip())
         self.bind("<Right>", lambda e: self._on_skip())
@@ -176,7 +214,9 @@ class PhotoCullerUI(tk.Tk):
         self._clear_stage()
         cluster = self.queue[self.queue_index]
         self._current_cluster = cluster
-        self.folder_label.config(text=Path(cluster.folder).name or cluster.folder)
+        self.folder_label.config(
+            text=f"Stage 2 of 2: Duplicate Review  —  {Path(cluster.folder).name or cluster.folder}"
+        )
         total = len(self.queue)
         self.progress_label.config(text=f"Cluster {self.queue_index + 1} / {total}")
         self.progress_bar.configure(maximum=max(1, total), value=self.queue_index + 1)
@@ -231,22 +271,156 @@ class PhotoCullerUI(tk.Tk):
         self._clear_stage()
         self.folder_label.config(text=self.organized_folder)
         self.progress_label.config(text="Done")
-        tk.Label(self.stage,
-                 text="No similar-photo clusters found.\nYour library is already clean.",
-                 bg=BG, fg=BEST_FG, font=("Helvetica", 16, "bold")).place(
-            relx=0.5, rely=0.5, anchor="center")
-        self.status_var.set("All clusters processed.")
+        q_done = len(self._quality_queue)
+        c_done = len(self.queue)
+        if q_done == 0 and c_done == 0:
+            msg = "No quality issues or duplicate clusters found.\nYour library looks great!"
+        elif c_done == 0:
+            msg = f"All {q_done} quality issue(s) reviewed.\nNo duplicate clusters found."
+        elif q_done == 0:
+            msg = f"All {c_done} duplicate cluster(s) reviewed."
+        else:
+            msg = f"All {q_done} quality issue(s) and {c_done} duplicate cluster(s) reviewed."
+        tk.Label(self.stage, text=msg, bg=BG, fg=BEST_FG,
+                 font=("Helvetica", 15, "bold")).place(relx=0.5, rely=0.5, anchor="center")
+        self.status_var.set("Culling complete.")
+
+    # ------------------------------------------------------------------
+    # Stage navigation helpers
+    # ------------------------------------------------------------------
+
+    def _enter_stage2(self) -> None:
+        """Transition from Stage 1 to Stage 2 (similarity cluster review)."""
+        self._stage = 2
+        if self.queue:
+            self.queue_index = 0
+            self._load_current()
+        elif self._analysis_done:
+            self._show_empty_state()
+        # else: clusters still arriving via streaming; _handle_analysis_msg will call _load_current
+
+    # ------------------------------------------------------------------
+    # Stage 1 — Quality (blurry/shaky) review
+    # ------------------------------------------------------------------
+
+    def _load_quality_item(self) -> None:
+        """Render the current Stage 1 quality review item."""
+        self._clear_stage()
+        if self._quality_index >= len(self._quality_queue):
+            self._enter_stage2()
+            return
+        item = self._quality_queue[self._quality_index]
+        self._current_quality_item = item
+        total_q = len(self._quality_queue)
+
+        self.folder_label.config(
+            text=f"Stage 1 of 2: Quality Review  —  {Path(item.folder).name or item.folder}"
+        )
+        self.progress_label.config(text=f"Issue {self._quality_index + 1} / {total_q}")
+        self.progress_bar.configure(maximum=max(1, total_q), value=self._quality_index + 1)
+
+        self.stage.grid_columnconfigure([0, 1], weight=1, uniform="pane")
+        self.stage.grid_rowconfigure(0, weight=1)
+
+        # Left: bad photo
+        self._build_quality_pane(col=0, metric=item.bad, is_bad=True)
+
+        # Right: best alternative, or placeholder
+        alt = item.best_alternative()
+        if alt:
+            self._build_quality_pane(col=1, metric=alt, is_bad=False)
+        else:
+            ph = tk.Frame(self.stage, bg=PANEL_BG, padx=6, pady=6)
+            ph.grid(row=0, column=1, sticky="nsew", padx=6)
+            tk.Label(ph, text="No similar photo\nfound in this folder",
+                     bg=PANEL_BG, fg=DIM, font=("Helvetica", 13, "italic")).place(
+                relx=0.5, rely=0.4, anchor="center")
+            tk.Label(ph, text="Discard only if confident this is not worth keeping.",
+                     bg=PANEL_BG, fg=DIM, font=("Helvetica", 9)).place(
+                relx=0.5, rely=0.6, anchor="center")
+
+        alt_note = "(sharp alternative shown →)" if alt else "(no similar photo found)"
+        self.status_var.set(
+            f"Blurry/shaky photo detected  {alt_note}  —  "
+            f"[D] Discard   [Space] Keep anyway   [S/→] Skip"
+        )
+
+    def _build_quality_pane(self, col: int, metric: ImageMetrics, is_bad: bool) -> None:
+        """Build one pane for Stage 1 quality review."""
+        bg = "#3a1a1a" if is_bad else BEST_BG
+        label_fg = "#ef5350" if is_bad else BEST_FG
+        pane = tk.Frame(self.stage, bg=bg, padx=6, pady=6)
+        pane.grid(row=0, column=col, sticky="nsew", padx=6)
+        self._thumb_frames.append(pane)
+
+        badge = "⚠  LOW QUALITY — [D] DISCARD" if is_bad else "✓  BEST AVAILABLE ALTERNATIVE"
+        tk.Label(pane, text=badge, bg=bg, fg=label_fg,
+                 font=("Helvetica", 11, "bold")).pack(anchor="w", padx=4)
+
+        thumb = make_thumbnail(metric.path)
+        thumb_frame = tk.Frame(pane, bg="#111111")
+        thumb_frame.pack(padx=4, pady=(2, 4))
+        if thumb:
+            self._photo_refs.append(thumb)
+            tk.Label(thumb_frame, image=thumb, bg="#111111").pack()
+        else:
+            tk.Label(thumb_frame, text="[unavailable]", bg="#111111", fg=DIM,
+                     font=("Helvetica", 11)).pack(padx=40, pady=40)
+
+        sharp = f"{metric.sharpness:,.0f}" if metric.sharpness is not None else "n/a"
+        tilt = f"{metric.tilt_score:.1f}°" if metric.tilt_score is not None else "n/a"
+        tk.Label(pane, text=f"Sharpness {sharp}   Tilt {tilt}",
+                 bg=bg, fg=FG, font=("Helvetica", 10)).pack(anchor="w", padx=4)
+        tk.Label(pane, text=Path(metric.path).name, bg=bg, fg=DIM,
+                 font=("Helvetica", 9), anchor="w", wraplength=THUMB_WIDTH).pack(
+            anchor="w", padx=4, pady=(0, 2))
+
+    def _on_quality_discard(self) -> None:
+        """Stage 1: move the bad photo to _Discarded."""
+        if self._stage != 1:
+            return
+        item = getattr(self, "_current_quality_item", None)
+        if item is None or not Path(item.bad.path).exists():
+            self._advance()
+            return
+        event = Path(item.folder).name or item.folder
+        discarded_dir = self._discarded_dir(item.folder)
+        try:
+            dest = self._unique_dest(discarded_dir, Path(item.bad.path).name)
+            journal.safe_move(
+                self.organized_folder, item.bad.path, dest,
+                op="quality-reject", restore=item.bad.path, event=event,
+            )
+            journal.push_undo(
+                self.organized_folder,
+                source=dest, original=item.bad.path, kind="quality-reject",
+            )
+            self.status_var.set(f"Discarded: {Path(item.bad.path).name}")
+        except (OSError, ValueError) as exc:
+            logger.error("Quality discard failed: %s", exc)
+            self.status_var.set(f"Discard failed: {exc}")
+            return
+        self._advance()
 
     # ------------------------------------------------------------------
     # Hotkey handlers
     # ------------------------------------------------------------------
 
     def _on_keep(self, index: int) -> None:
+        if self._stage != 2:
+            return
         members = getattr(self, "_current_members", [])
         if 0 <= index < len(members):
             self._select(members[index], auto=False)
 
     def _on_auto(self) -> None:
+        if self._stage == 1:
+            # Space in Stage 1 = keep the bad photo (skip discard)
+            item = getattr(self, "_current_quality_item", None)
+            if item is not None:
+                self.status_var.set(f"Kept: {Path(item.bad.path).name}")
+            self._advance()
+            return
         best = getattr(self, "_current_best", None)
         if best is not None:
             self._select(best, auto=True)
@@ -262,8 +436,14 @@ class PhotoCullerUI(tk.Tk):
                 w = w.master
 
     def _on_skip(self) -> None:
-        self.status_var.set("Cluster skipped.")
-        self._advance()
+        if self._stage == 1:
+            item = getattr(self, "_current_quality_item", None)
+            if item is not None:
+                self.status_var.set(f"Kept: {Path(item.bad.path).name}")
+            self._advance()
+        else:
+            self.status_var.set("Cluster skipped.")
+            self._advance()
 
     def _on_undo(self) -> None:
         entry = journal.pop_undo(self.organized_folder)
@@ -340,11 +520,19 @@ class PhotoCullerUI(tk.Tk):
         self._advance()
 
     def _advance(self) -> None:
-        self.queue_index += 1
-        if self.queue_index >= len(self.queue):
-            self._show_empty_state()
+        if self._stage == 1:
+            self._quality_index += 1
+            if self._quality_index < len(self._quality_queue):
+                self._load_quality_item()
+            elif self._analysis_done or not self._quality_queue:
+                self._enter_stage2()
+            # else: more quality items still arriving via streaming; wait
         else:
-            self._load_current()
+            self.queue_index += 1
+            if self.queue_index >= len(self.queue):
+                self._show_empty_state()
+            else:
+                self._load_current()
 
 
 # ---------------------------------------------------------------------------

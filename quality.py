@@ -79,6 +79,25 @@ class SimilarityCluster:
         return ([best] if best else []) + rest[:IMAGES_PER_CLUSTER_MAX - (1 if best else 0)]
 
 
+LOW_SHARPNESS_THRESHOLD = 80.0
+"""Laplacian variance below this flags an image as blurry or shaky.
+Tune via ``snapsort.toml`` ``[quality] sharpness_threshold``."""
+
+
+@dataclass
+class QualityReviewItem:
+    """A low-quality photo (blurry/shaky) flagged for review with optional sharper alternatives."""
+
+    folder: str
+    bad: ImageMetrics
+    alternatives: List[ImageMetrics] = field(default_factory=list)
+    reason: str = "blurry"
+
+    def best_alternative(self) -> Optional[ImageMetrics]:
+        """Return the sharpest available alternative, or None."""
+        return self.alternatives[0] if self.alternatives else None
+
+
 def _is_analyzable_file(path: str) -> bool:
     return Path(path).suffix.lower() in ANALYZE_EXTENSIONS
 

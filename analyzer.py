@@ -22,6 +22,8 @@ from quality import (  # re-exported for callers that import from analyzer
     _is_analyzable_file,
     get_sharpness_score,
     get_tilt_angle,
+    LOW_SHARPNESS_THRESHOLD,
+    QualityReviewItem,
 )
 
 logger = logging.getLogger("snapsort.analyzer")
@@ -193,6 +195,98 @@ def get_similarity_clusters(
     clusters.sort(key=lambda c: len(c.members), reverse=True)
     logger.info("Found %d clusters in %s", len(clusters), folder_path)
     return clusters
+
+
+def find_quality_issues(
+    folder_path: str,
+    cache: Optional[AnalysisCache] = None,
+    config: Optional[dict] = None,
+) -> List[QualityReviewItem]:
+    """Find blurry/shaky photos in ``folder_path`` with optional sharper alternatives.
+
+    A photo is flagged when its Laplacian-variance sharpness falls below
+    ``LOW_SHARPNESS_THRESHOLD`` (configurable via ``[quality] sharpness_threshold``
+    in ``snapsort.toml``).  For each flagged photo, any same-folder photos that are
+    above the threshold *and* have a similar pHash are listed as alternatives.
+    """
+    folder = Path(folder_path)
+    if not folder.is_dir():
+        return []
+    files = sorted(
+        str(p) for p in folder.iterdir()
+        if p.is_file() and _is_analyzable_file(str(p))
+    )
+    if not files:
+        return []
+
+    threshold = float(
+        (config or {}).get("quality", {}).get("sharpness_threshold", LOW_SHARPNESS_THRESHOLD)
+    )
+    metrics_list = [analyze_image(f, cache=cache) for f in files]
+    bad_set = {
+        m for m in metrics_list
+        if m.sharpness is not None and m.sharpness < threshold
+    }
+    good = [m for m in metrics_list if m not in bad_set]
+
+    issues: List[QualityReviewItem] = []
+    for bm in sorted(bad_set, key=lambda m: m.sharpness or 0.0):
+        alts: List[ImageMetrics] = []
+        for gm in good:
+            if bm.phash and gm.phash:
+                d = _hamming(bm.phash, gm.phash)
+                # Wider threshold (3×) to catch same-scene shots with composition shift
+                if d is not None and d <= HASH_HAMMING_THRESHOLD * 3:
+                    alts.append(gm)
+        alts.sort(key=lambda m: -(m.sharpness or 0.0))
+        issues.append(QualityReviewItem(
+            folder=folder_path,
+            bad=bm,
+            alternatives=alts[:IMAGES_PER_CLUSTER_MAX],
+        ))
+    logger.debug("Quality issues in %s: %d", folder_path, len(issues))
+    return issues
+
+
+def analyze_directory_full(
+    root_path: str,
+    progress_cb=None,
+    use_cache: bool = True,
+    config: Optional[dict] = None,
+) -> "tuple[List[QualityReviewItem], List[SimilarityCluster]]":
+    """Recursively analyze image folders for both quality issues and similarity clusters.
+
+    Runs both passes per folder in a single scan so the cache is shared
+    and images are analyzed only once.
+
+    ``progress_cb(done, total, new_issues, new_clusters)`` is called after
+    each folder so the UI can stream results immediately.
+
+    Returns ``(quality_issues, clusters)`` tuple.
+    """
+    root_path = str(Path(root_path).expanduser().absolute())
+    cache: Optional[AnalysisCache] = AnalysisCache(root_path) if use_cache else None
+    folders = _iter_folders_with_images(root_path)
+    total = len(folders)
+    all_quality: List[QualityReviewItem] = []
+    all_clusters: List[SimilarityCluster] = []
+    if total:
+        logger.info("Full analysis: %d folders under %s", total, root_path)
+    for i, dirpath in enumerate(folders, start=1):
+        issues = find_quality_issues(dirpath, cache=cache, config=config)
+        all_quality.extend(issues)
+        clusters = get_similarity_clusters(dirpath, cache=cache, config=config)
+        all_clusters.extend(clusters)
+        if progress_cb is not None:
+            try:
+                progress_cb(i, total, issues, clusters)
+            except Exception:
+                logger.debug("progress_cb error", exc_info=True)
+    if cache is not None:
+        if total:
+            logger.info("Cache: %d hits, %d misses", cache.hits, cache.misses)
+        cache.save()
+    return all_quality, all_clusters
 
 
 def _iter_folders_with_images(root_path: str) -> List[str]:
