@@ -69,6 +69,15 @@ MAX_HISTOGRAM_CLUSTER_SIZE = 9
 # next culling run.  Keeping this equal to PAGE_SIZE means one clean
 # grid page per cluster with no tournament rounds needed for normal bursts.
 
+COMBINED_HASH_THRESHOLD = 20
+# Hamming distance upper-bound used for the pHash confirmation step inside
+# get_histogram_clusters.  A candidate pair must pass BOTH:
+#   histogram Bhattacharyya ≥ HISTOGRAM_SIMILARITY_THRESHOLD  (same colour)
+#   pHash Hamming ≤ COMBINED_HASH_THRESHOLD                   (same structure)
+# The old HASH_HAMMING_THRESHOLD (10) is intentionally stricter and is kept
+# for the standalone pHash path used by find_quality_issues.
+# Configurable via snapsort.toml [clustering] combined_hash_threshold.
+
 
 def get_phash_hex(image_path: str) -> Optional[str]:
     """Return a perceptual hash hex string, or None on failure."""
@@ -367,15 +376,18 @@ def get_histogram_clusters(
     cache: Optional[AnalysisCache] = None,
     progress_cb=None,
 ) -> List[SimilarityCluster]:
-    """Cluster images in *folder_path* by colour-histogram similarity.
+    """Cluster images in *folder_path* by colour-histogram similarity confirmed by pHash.
 
-    ``progress_cb(images_done, images_total)`` fires per image during the
-    histogram-computation phase (the slow part) so callers can stream
-    progress to the UI.
+    Two-pass approach:
+      Pass 1 — colour histogram (Bhattacharyya ≥ HISTOGRAM_SIMILARITY_THRESHOLD):
+               fast per-image scan; ``progress_cb(done, total)`` fires here.
+      Pass 2 — pHash Hamming distance (≤ COMBINED_HASH_THRESHOLD):
+               re-clusters each histogram candidate group by structural similarity
+               to reject "same colour palette, different subject" false positives.
 
-    Only images that end up in a multi-photo group have full
-    ``ImageMetrics`` computed (sharpness/tilt via OpenCV) so the expensive
-    CV pass is skipped for photos with no near-duplicates.
+    Only images that end up in a confirmed multi-photo group have full
+    ``ImageMetrics`` computed (sharpness/tilt) so the expensive CV pass
+    is skipped for photos with no near-duplicates.
     """
     folder = Path(folder_path)
     if not folder.is_dir():
@@ -400,21 +412,47 @@ def get_histogram_clusters(
     if not multi:
         return []
 
-    # Compute full ImageMetrics only for photos that are in a cluster
+    # Compute full ImageMetrics (pHash, sharpness, tilt) only for photos
+    # that are in a histogram candidate group.
     needed = {p for g in multi for p in g}
     metrics_map: Dict[str, ImageMetrics] = {
         p: analyze_image(p, cache=cache) for p in needed
     }
-    clusters = [
-        SimilarityCluster(folder=folder_path, members=[metrics_map[p] for p in g])
-        for g in multi
-    ]
+
+    # Pass 2 — pHash confirmation.
+    # Re-cluster each histogram group using structural (pHash) similarity so
+    # that photos with the same colour distribution but different subjects are
+    # separated into distinct clusters (or dropped as singletons).
+    hash_threshold = int(
+        (config or {}).get("clustering", {}).get(
+            "combined_hash_threshold", COMBINED_HASH_THRESHOLD
+        )
+    )
+    verified: List[SimilarityCluster] = []
+    for group_paths in multi:
+        group_metrics = [metrics_map[p] for p in group_paths]
+        subgroups = _cluster_by_hash(group_metrics, threshold=hash_threshold)
+        for sg in subgroups:
+            if len(sg) >= 2:
+                verified.append(SimilarityCluster(folder=folder_path, members=sg))
+
+    if not verified:
+        logger.info(
+            "Combined clusters in %s: %d histogram group(s), 0 survived pHash check",
+            folder_path, len(multi),
+        )
+        return []
+
+    logger.info(
+        "Combined clusters in %s: %d histogram candidate(s) → %d after pHash confirmation",
+        folder_path, len(multi), len(verified),
+    )
 
     # Truncate oversized clusters: keep the best-quality members up to
     # MAX_HISTOGRAM_CLUSTER_SIZE; the rest stay on disk and will re-cluster
     # on the next culling run once the kept photos are discarded.
     result = []
-    for cl in clusters:
+    for cl in verified:
         if len(cl.members) > MAX_HISTOGRAM_CLUSTER_SIZE:
             excess = len(cl.members) - MAX_HISTOGRAM_CLUSTER_SIZE
             best = cl.sorted_members()[:MAX_HISTOGRAM_CLUSTER_SIZE]
@@ -428,7 +466,6 @@ def get_histogram_clusters(
             result.append(cl)
 
     result.sort(key=lambda c: len(c.members), reverse=True)
-    logger.info("Histogram clusters in %s: %d", folder_path, len(result))
     return result
 
 
