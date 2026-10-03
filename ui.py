@@ -143,7 +143,9 @@ class PhotoCullerUI(tk.Tk):
                 self._show_empty_state()
         elif kind == "error":
             self._analysis_done = True
-            messagebox.showerror("SnapSort", f"Analysis failed:\n{self.organized_folder}", parent=self)
+            messagebox.showerror("SnapSort — Analysis Failed",
+                                 f"Analysis failed:\n{msg[1]}\n\nFolder: {self.organized_folder}",
+                                 parent=self)
             self._show_empty_state()
 
     # ------------------------------------------------------------------

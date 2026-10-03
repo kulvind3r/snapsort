@@ -223,14 +223,15 @@ def find_quality_issues(
         (config or {}).get("quality", {}).get("sharpness_threshold", LOW_SHARPNESS_THRESHOLD)
     )
     metrics_list = [analyze_image(f, cache=cache) for f in files]
-    bad_set = {
+    bad = [
         m for m in metrics_list
         if m.sharpness is not None and m.sharpness < threshold
-    }
-    good = [m for m in metrics_list if m not in bad_set]
+    ]
+    bad_paths = {m.path for m in bad}          # str keys — always hashable
+    good = [m for m in metrics_list if m.path not in bad_paths]
 
     issues: List[QualityReviewItem] = []
-    for bm in sorted(bad_set, key=lambda m: m.sharpness or 0.0):
+    for bm in sorted(bad, key=lambda m: m.sharpness or 0.0):
         alts: List[ImageMetrics] = []
         for gm in good:
             if bm.phash and gm.phash:

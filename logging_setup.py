@@ -30,7 +30,27 @@ _CONFIGURED = False
 
 
 def get_log_path() -> Path:
-    """Platform-appropriate log directory for SnapSort."""
+    """Return the directory where snapsort.log is written.
+
+    When running as a frozen binary the log is placed **next to the
+    executable** so the user can find it immediately without hunting through
+    platform-specific app-data folders.  If that location is not writable
+    (e.g. the binary lives in Program Files) we fall back to the
+    platform-appropriate user log directory.
+    """
+    if getattr(sys, "frozen", False):
+        # Preferred: same folder as the .exe — visible right next to it.
+        exe_dir = Path(sys.executable).parent
+        try:
+            exe_dir.mkdir(parents=True, exist_ok=True)
+            probe = exe_dir / ".snapsort_log_probe"
+            probe.touch()
+            probe.unlink()
+            return exe_dir
+        except OSError:
+            pass  # fall through to platform default
+
+    # Dev mode or non-writable binary location → platform log directory.
     if sys.platform == "win32":
         base = Path.home() / "AppData" / "Local" / "SnapSort" / "Logs"
     elif sys.platform == "darwin":
@@ -57,13 +77,14 @@ def _install_excepthook(logger: logging.Logger) -> None:
 
 
 def _log_startup_banner(logger: logging.Logger, log_file: Path) -> None:
-    """Structured, self-identifying startup banner (6.4)."""
+    """Structured, self-identifying startup banner."""
     logger.info("=" * 60)
     logger.info("SnapSort starting up")
     logger.info("  Version   : %s", __version__)
     logger.info("  Platform  : %s %s", sys.platform, platform.version())
     logger.info("  Python    : %s", sys.version.split()[0])
     logger.info("  Frozen    : %s", getattr(sys, "frozen", False))
+    logger.info("  Executable: %s", sys.executable)
     logger.info("  Log file  : %s", log_file)
     logger.info("=" * 60)
 
