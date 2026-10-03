@@ -55,12 +55,31 @@ def _validate_dir(path: str, prompt: str) -> str:
     return str(p)
 
 
+def _has_console() -> bool:
+    """Return True when a real stdin terminal is available.
+
+    PyInstaller GUI builds (console=False) set sys.stdin to None.
+    Calling input() in that state raises OSError: 'lost sys.stdin'.
+    """
+    return sys.stdin is not None and not getattr(sys, "frozen", False)
+
+
 def _confirm(message: str) -> bool:
-    try:
-        answer = input(message).strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return answer in {"y", "yes"}
+    """Ask a yes/no question; use Tkinter messagebox when stdin is absent."""
+    if _has_console():
+        try:
+            return input(message).strip().lower() in {"y", "yes"}
+        except (EOFError, KeyboardInterrupt):
+            return False
+    # Frozen / no-console path (Windows .exe with console=False).
+    import tkinter as _tk
+    from tkinter import messagebox as _mb
+    root = _tk.Tk()
+    root.withdraw()
+    root.update()
+    result = _mb.askyesno("SnapSort", message.rstrip(" ").rstrip("[y/N]").rstrip("[Y/n]").strip())
+    root.destroy()
+    return result
 
 
 def _run_stage1(source_dir: str, output_dir: str | None,
@@ -72,25 +91,33 @@ def _run_stage1(source_dir: str, output_dir: str | None,
         target = Path(source_dir).expanduser().absolute()
     target_root = str(target)
 
-    banner = "=" * 60
-    print(f"\n{banner}\n  STAGE 1 — Headless Organization\n{banner}")
-    print(f"  Source : {source_dir}")
-    print(f"  Target : {target_root}")
-    if dry_run:
-        print("  Mode   : DRY RUN (no files will be moved)")
+    logger.info("Stage 1 starting — source: %s  target: %s  dry_run: %s",
+                source_dir, target_root, dry_run)
+    if _has_console():
+        banner = "=" * 60
+        print(f"\n{banner}\n  STAGE 1 — Headless Organization\n{banner}")
+        print(f"  Source : {source_dir}")
+        print(f"  Target : {target_root}")
+        if dry_run:
+            print("  Mode   : DRY RUN (no files will be moved)")
 
     records = organize_directory(source_dir, target_root, dry_run=dry_run,
                                  config_obj=config_obj)
 
     by_date = {r.date for r in records if r.date is not None}
     with_gps = sum(1 for r in records if r.gps is not None)
-    print(f"\n  Files discovered : {len(records)}")
-    print(f"  Distinct dates   : {len(by_date)}")
-    print(f"  Photos w/ GPS    : {with_gps}")
-    print("\n  Cluster summary:")
-    for line in summarize_clusters(records, config_obj).splitlines():
-        print(f"    {line}")
-    print(f"{banner}\n")
+    logger.info(
+        "Stage 1 complete — %d files, %d distinct dates, %d with GPS",
+        len(records), len(by_date), with_gps,
+    )
+    if _has_console():
+        print(f"\n  Files discovered : {len(records)}")
+        print(f"  Distinct dates   : {len(by_date)}")
+        print(f"  Photos w/ GPS    : {with_gps}")
+        print("\n  Cluster summary:")
+        for line in summarize_clusters(records, config_obj).splitlines():
+            print(f"    {line}")
+        print("=" * 60 + "\n")
     return target_root
 
 
@@ -133,15 +160,31 @@ def main(argv: list[str] | None = None) -> int:
     source_dir = args.source
     if source_dir is None:
         if args.skip_organize:
-            # Cull-only: ask for the organized folder directly.
             print("Selecting organized folder to cull...")
             pick_folder_and_run()
             return 0
-        try:
-            source_dir = input("Enter source photos directory: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nAborted.")
-            return 1
+        if _has_console():
+            try:
+                source_dir = input("Enter source photos directory: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nAborted.")
+                return 1
+        else:
+            # Frozen GUI build: use a folder picker dialog.
+            import tkinter as _tk
+            from tkinter import filedialog as _fd
+            root = _tk.Tk()
+            root.withdraw()
+            root.update()
+            source_dir = _fd.askdirectory(
+                title="Select source photos folder",
+                initialdir=str(Path.home()),
+                parent=root,
+            )
+            root.destroy()
+            if not source_dir:
+                logger.info("User cancelled source folder selection.")
+                return 0
     if not source_dir:
         print("No source directory provided. Aborting.")
         return 1
