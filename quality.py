@@ -188,7 +188,7 @@ def get_tilt_angle(image_path: str) -> Optional[Tuple[float, str, int]]:
         dev_horiz: List[float] = []
         dev_vert: List[float] = []
         for seg in lines:
-            x1, y1, x2, y2 = seg[0]
+            x1, y1, x2, y2 = seg.reshape(-1)  # works for both (1,4) and (4,) shapes
             angle = _segment_angle_deg(float(x1), float(y1), float(x2), float(y2))
             dev = _deviation_from_axis(angle)
             if dev > _ANGLE_TOLERANCE_DEG:
