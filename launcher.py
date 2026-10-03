@@ -70,7 +70,7 @@ class LauncherUI(tk.Tk):
         row.pack(anchor="w", padx=24, pady=16)
         tk.Label(row, text="📷  SnapSort", bg=_HEADER_BG, fg=FG,
                  font=("Helvetica", 20, "bold")).pack(side=tk.LEFT)
-        tk.Label(row, text="  —  Organise and cull your photo library",
+        tk.Label(row, text="  —  Organise your photo library",
                  bg=_HEADER_BG, fg=DIM, font=("Helvetica", 11)).pack(side=tk.LEFT)
 
     def _build_folder_row(self) -> None:
@@ -98,6 +98,12 @@ class LauncherUI(tk.Tk):
                  "rejected duplicates are moved to _Discarded/",
             bg=BG, fg=DIM, font=("Helvetica", 9),
         ).pack(anchor="w", pady=(7, 0))
+        tk.Label(
+            sec,
+            text="ℹ  Tip: Cull before Organising — similar photos are detected across"
+                 " the whole folder and splitting into subfolders can hide duplicates.",
+            bg=BG, fg=DIM, font=("Helvetica", 9),
+        ).pack(anchor="w", pady=(4, 0))
 
     def _build_cards(self) -> None:
         frame = tk.Frame(self, bg=BG)
@@ -105,57 +111,48 @@ class LauncherUI(tk.Tk):
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_columnconfigure(1, weight=1)
 
-        # ── Step 1 card ──────────────────────────────────────────────
-        c1 = tk.Frame(frame, bg=_CARD_BG, padx=18, pady=16)
-        c1.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        # ── Cull card (left — works best on the original flat folder) ──
+        c_cull = tk.Frame(frame, bg=_CARD_BG, padx=18, pady=16)
+        c_cull.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
 
-        tk.Label(c1, text="STEP 1", bg=_CARD_BG, fg=ACCENT,
-                 font=("Helvetica", 9, "bold")).pack(anchor="w")
-        tk.Label(c1, text="Organise", bg=_CARD_BG, fg=FG,
+        tk.Label(c_cull, text="Cull", bg=_CARD_BG, fg=FG,
                  font=("Helvetica", 15, "bold")).pack(anchor="w")
         tk.Label(
-            c1,
-            text="Sort photos into dated event and trip folders\n"
-                 "using EXIF date and GPS coordinates.",
+            c_cull,
+            text="Remove blurry, shaky, and duplicate photos.\n"
+                 "Works best on the original unsorted folder —\n"
+                 "finds more similar photos before they are split.",
             bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
         ).pack(anchor="w", pady=(8, 14))
 
-        self._org_btn = self._make_btn(c1, "Start Organising", self._start_organise)
+        self._cull_btn = self._make_btn(c_cull, "Start Culling", self._start_cull)
+        self._cull_btn.pack(fill=tk.X, ipady=8)
+
+        # ── Organise card (right) ──────────────────────────────────────
+        c_org = tk.Frame(frame, bg=_CARD_BG, padx=18, pady=16)
+        c_org.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        tk.Label(c_org, text="Organise", bg=_CARD_BG, fg=FG,
+                 font=("Helvetica", 15, "bold")).pack(anchor="w")
+        tk.Label(
+            c_org,
+            text="Sort photos into dated event and trip folders\n"
+                 "using EXIF date and GPS coordinates.\n"
+                 "Can be run on any folder, before or after culling.",
+            bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
+        ).pack(anchor="w", pady=(8, 14))
+
+        self._org_btn = self._make_btn(c_org, "Start Organising", self._start_organise)
         self._org_btn.pack(fill=tk.X, ipady=8)
 
-        self._org_bar = ttk.Progressbar(c1, mode="indeterminate")
+        self._org_bar = ttk.Progressbar(c_org, mode="indeterminate")
         self._org_bar.pack(fill=tk.X, pady=(10, 4))
 
-        self._org_lbl = tk.Label(c1, textvariable=self._org_label,
+        self._org_lbl = tk.Label(c_org, textvariable=self._org_label,
                                  bg=_CARD_BG, fg=DIM,
                                  font=("Helvetica", 9), justify=tk.LEFT,
                                  wraplength=260)
         self._org_lbl.pack(anchor="w")
-
-        # ── Step 2 card ──────────────────────────────────────────────
-        c2 = tk.Frame(frame, bg=_CARD_BG, padx=18, pady=16)
-        c2.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
-
-        tk.Label(c2, text="STEP 2", bg=_CARD_BG, fg=ACCENT,
-                 font=("Helvetica", 9, "bold")).pack(anchor="w")
-        tk.Label(c2, text="Cull Duplicates", bg=_CARD_BG, fg=FG,
-                 font=("Helvetica", 15, "bold")).pack(anchor="w")
-        tk.Label(
-            c2,
-            text="Review visually similar photos side-by-side\n"
-                 "and keep the sharpest, best-framed shot.",
-            bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
-        ).pack(anchor="w", pady=(8, 14))
-
-        self._cull_btn = self._make_btn(c2, "Start Culling", self._start_cull)
-        self._cull_btn.pack(fill=tk.X, ipady=8)
-
-        tk.Label(
-            c2,
-            text="Select the folder you organised in Step 1\n"
-                 "(or any folder already sorted into dated subfolders).",
-            bg=_CARD_BG, fg=DIM, font=("Helvetica", 9), justify=tk.LEFT,
-        ).pack(anchor="w", pady=(10, 0))
 
     def _build_statusbar(self) -> None:
         bar = tk.Frame(self, bg=PANEL_BG)

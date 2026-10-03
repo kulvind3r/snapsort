@@ -33,33 +33,21 @@ DIM = "#9e9e9e"
 
 def make_thumbnail(
     path: str,
-    width: int = THUMB_WIDTH,
-    height: int = THUMB_HEIGHT,
+    max_w: int = 380,
+    max_h: int = 300,
 ) -> Optional[ImageTk.PhotoImage]:
-    """Return a center-cropped, downscaled PhotoImage for display.
+    """Return a PhotoImage scaled to fit within ``max_w × max_h``, aspect ratio preserved.
 
-    Returns None (with a log warning) when the file cannot be decoded.
-    Avoids the context-manager form of Image.open so the file handle and
-    pixel buffer stay alive until after ``ImageTk.PhotoImage`` is built.
+    Uses ``Image.thumbnail`` (fit-within / letterbox) so the full photo is
+    always visible with no cropping.  Returns None on failure.
     """
     try:
         src = Image.open(path)
         src.load()
         if src.mode not in ("RGB", "L"):
             src = src.convert("RGB")
-        w, h = src.size
-        target_ratio = width / height
-        src_ratio = w / h
-        if src_ratio > target_ratio:
-            new_w = max(1, int(h * target_ratio))
-            left = (w - new_w) // 2
-            img = src.crop((left, 0, left + new_w, h))
-        else:
-            new_h = max(1, int(w / target_ratio))
-            top = (h - new_h) // 2
-            img = src.crop((0, top, w, top + new_h))
-        img = img.resize((width, height), Image.LANCZOS)
-        return ImageTk.PhotoImage(img)
+        src.thumbnail((max_w, max_h), Image.LANCZOS)
+        return ImageTk.PhotoImage(src)
     except Exception:
         logger.warning("Could not render thumbnail for %s", path, exc_info=True)
         return None

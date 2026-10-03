@@ -34,7 +34,7 @@ import journal
 import logging_setup
 from widgets import (
     make_thumbnail,
-    THUMB_WIDTH, BG, FG, ACCENT, BEST_BG, BEST_FG, PANEL_BG, DIM,
+    BG, FG, ACCENT, BEST_BG, BEST_FG, PANEL_BG, DIM,
     DISCARDED_DIRNAME,
 )
 
@@ -62,10 +62,12 @@ class PhotoCullerUI(tk.Toplevel):
         self.undo_stack = journal.load_undo_stack(self.organized_folder)
         self._photo_refs: List[object] = []
         self._thumb_frames: List[tk.Frame] = []
+        self._resize_job: Optional[str] = None
 
         self._build_widgets()
         self._bind_hotkeys()
         self.protocol("WM_DELETE_WINDOW", self._on_quit)
+        self.bind("<Configure>", self._on_window_resize)
         self.status_var.set("Analyzing folder…")
         self._start_analysis()
         self.after(100, self._poll_analysis_queue)
@@ -231,40 +233,56 @@ class PhotoCullerUI(tk.Toplevel):
         for col in range(n):
             self.stage.grid_columnconfigure(col, weight=1, uniform="pane")
         self.stage.grid_rowconfigure(0, weight=1)
+
+        img_w, img_h = self._thumb_size(n_cols=n)
+
         for col, metric in enumerate(members):
             is_best = metric is best
             pane_bg = BEST_BG if is_best else PANEL_BG
             pane = tk.Frame(self.stage, bg=pane_bg, padx=6, pady=6)
             pane.grid(row=0, column=col, sticky="nsew", padx=6)
+            pane.grid_columnconfigure(0, weight=1)
+            pane.grid_rowconfigure(1, weight=1)  # image row expands
             self._thumb_frames.append(pane)
 
+            # Row 0: badge
             badge = f"[{col + 1}]" + ("   ★ RECOMMENDED BEST PICK" if is_best else "")
             tk.Label(pane, text=badge, bg=pane_bg,
                      fg=BEST_FG if is_best else ACCENT,
-                     font=("Helvetica", 11, "bold")).pack(anchor="w", padx=4)
+                     font=("Helvetica", 11, "bold"), anchor="center").grid(
+                row=0, column=0, sticky="ew", padx=4, pady=(8, 4))
 
-            thumb = make_thumbnail(metric.path)
+            # Row 1: image — fills available space
             thumb_frame = tk.Frame(pane, bg="#111111")
-            thumb_frame.pack(padx=4, pady=(2, 4))
+            thumb_frame.grid(row=1, column=0, sticky="nsew", padx=4)
+            thumb_frame.grid_columnconfigure(0, weight=1)
+            thumb_frame.grid_rowconfigure(0, weight=1)
+            thumb = make_thumbnail(metric.path, img_w, img_h)
             if thumb is not None:
                 self._photo_refs.append(thumb)
                 lbl = tk.Label(thumb_frame, image=thumb, bg="#111111")
                 lbl.image = thumb   # prevent GC before Tk renders
-                lbl.pack()
+                lbl.grid(row=0, column=0)
             else:
                 tk.Label(thumb_frame, text="[unavailable]",
-                         bg="#111111", fg=DIM, font=("Helvetica", 11)).pack(padx=40, pady=40)
+                         bg="#111111", fg=DIM, font=("Helvetica", 11)).grid(
+                    row=0, column=0, padx=40, pady=40)
 
+            # Row 2: sharpness/tilt
             sharp = f"{metric.sharpness:,.0f}" if metric.sharpness is not None else "n/a"
             tilt = f"{metric.tilt_score:.1f}°" if metric.tilt_score is not None else "n/a"
             tk.Label(pane, text=f"Sharpness {sharp}   Tilt {tilt} ({metric.dominant_axis or '—'})",
-                     bg=pane_bg, fg=FG, font=("Helvetica", 10)).pack(anchor="w", padx=4)
-            tk.Label(pane, text=Path(metric.path).name, bg=pane_bg, fg=DIM,
-                     font=("Helvetica", 9), anchor="w",
-                     wraplength=THUMB_WIDTH).pack(anchor="w", padx=4, pady=(0, 2))
+                     bg=pane_bg, fg=FG, font=("Helvetica", 10), anchor="center").grid(
+                row=2, column=0, sticky="ew", padx=4, pady=(4, 2))
 
-            for w in (pane, thumb_frame):
-                w.bind("<Button-1>", lambda e, i=col: self._on_keep(i))
+            # Row 3: filename
+            tk.Label(pane, text=Path(metric.path).name, bg=pane_bg, fg=DIM,
+                     font=("Helvetica", 9), anchor="center",
+                     wraplength=max(200, img_w)).grid(
+                row=3, column=0, sticky="ew", padx=4, pady=(0, 6))
+
+            for widget in (pane, thumb_frame):
+                widget.bind("<Button-1>", lambda e, i=col: self._on_keep(i))
 
         self.status_var.set(
             f"{len(cluster.members)} similar photos — "
@@ -288,6 +306,44 @@ class PhotoCullerUI(tk.Toplevel):
         tk.Label(self.stage, text=msg, bg=BG, fg=BEST_FG,
                  font=("Helvetica", 15, "bold")).place(relx=0.5, rely=0.5, anchor="center")
         self.status_var.set("Culling complete.")
+
+    # ------------------------------------------------------------------
+    # Responsive layout helpers
+    # ------------------------------------------------------------------
+
+    def _thumb_size(self, n_cols: int) -> tuple:
+        """Compute ``(max_w, max_h)`` for thumbnails from the current window size.
+
+        Uses window-level dimensions (no widget introspection required) so it
+        works correctly on both the first render and on every resize event.
+        """
+        self.update_idletasks()
+        win_w = max(self.winfo_width(), 1100)
+        win_h = max(self.winfo_height(), 700)
+        # Horizontal: stage padx(32) + inter-pane gaps(12×(n-1)) + pane internal padx(12×n)
+        h_overhead = 32 + 12 * (n_cols - 1) + 12 * n_cols
+        w = max(200, (win_w - h_overhead) // n_cols)
+        # Vertical: top bar+progress(80) + legend+status(70) + badge+meta+filename rows(90)
+        h = max(150, win_h - 240)
+        return w, h
+
+    def _on_window_resize(self, event) -> None:
+        """Debounced <Configure> handler — only reacts to the root window."""
+        if event.widget is not self:
+            return
+        if self._resize_job is not None:
+            self.after_cancel(self._resize_job)
+        self._resize_job = self.after(200, self._reload_view)
+
+    def _reload_view(self) -> None:
+        """Re-render the current item at the new window dimensions."""
+        self._resize_job = None
+        if not self._analysis_done:
+            return
+        if self._stage == 1 and self._quality_queue and self._quality_index < len(self._quality_queue):
+            self._load_quality_item()
+        elif self._stage == 2 and self.queue and self.queue_index < len(self.queue):
+            self._load_current()
 
     # ------------------------------------------------------------------
     # Stage navigation helpers
@@ -327,13 +383,18 @@ class PhotoCullerUI(tk.Toplevel):
         self.stage.grid_columnconfigure(1, weight=1, uniform="pane")
         self.stage.grid_rowconfigure(0, weight=1)
 
+        # Compute image dimensions once for both panes
+        img_w, img_h = self._thumb_size(n_cols=2)
+
         # Left: bad photo
-        self._build_quality_pane(col=0, metric=item.bad, is_bad=True)
+        self._build_quality_pane(col=0, metric=item.bad, is_bad=True,
+                                 img_w=img_w, img_h=img_h)
 
         # Right: best alternative, or placeholder
         alt = item.best_alternative()
         if alt:
-            self._build_quality_pane(col=1, metric=alt, is_bad=False)
+            self._build_quality_pane(col=1, metric=alt, is_bad=False,
+                                     img_w=img_w, img_h=img_h)
         else:
             ph = tk.Frame(self.stage, bg=PANEL_BG, padx=6, pady=6)
             ph.grid(row=0, column=1, sticky="nsew", padx=6)
@@ -350,7 +411,8 @@ class PhotoCullerUI(tk.Toplevel):
             f"[D] Discard   [Space] Keep anyway   [S/→] Skip"
         )
 
-    def _build_quality_pane(self, col: int, metric: ImageMetrics, is_bad: bool) -> None:
+    def _build_quality_pane(self, col: int, metric: ImageMetrics, is_bad: bool,
+                             img_w: int = 400, img_h: int = 400) -> None:
         """Build one pane for Stage 1 quality review."""
         bg = "#3a1a1a" if is_bad else BEST_BG
         label_fg = "#ef5350" if is_bad else BEST_FG
@@ -378,7 +440,7 @@ class PhotoCullerUI(tk.Toplevel):
         thumb_frame.grid(row=2, column=0, sticky="nsew", padx=4)
         thumb_frame.grid_columnconfigure(0, weight=1)
         thumb_frame.grid_rowconfigure(0, weight=1)
-        thumb = make_thumbnail(metric.path)
+        thumb = make_thumbnail(metric.path, img_w, img_h)
         if thumb:
             self._photo_refs.append(thumb)
             lbl = tk.Label(thumb_frame, image=thumb, bg="#111111")
@@ -391,7 +453,7 @@ class PhotoCullerUI(tk.Toplevel):
         # Row 3: filename — anchored below image
         tk.Label(pane, text=Path(metric.path).name, bg=bg, fg=DIM,
                  font=("Helvetica", 9), anchor="center",
-                 wraplength=THUMB_WIDTH).grid(
+                 wraplength=max(200, img_w)).grid(
             row=3, column=0, sticky="ew", padx=4, pady=(4, 8))
 
     def _on_quality_discard(self) -> None:
