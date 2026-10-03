@@ -842,6 +842,14 @@ class PhotoCullerUI(tk.Toplevel):
     def _clear_stage(self) -> None:
         for w in self.stage.winfo_children():
             w.destroy()
+        # Purge any column/row configuration left by the previous stage.
+        # The cluster grid configures up to 3 cols × 3 rows with weight=1;
+        # if these are not reset the quality pane (2 cols × 1 row) inherits
+        # the stale weights and the layout breaks.
+        for col in range(5):
+            self.stage.grid_columnconfigure(col, weight=0, uniform="", minsize=0)
+        for row in range(5):
+            self.stage.grid_rowconfigure(row, weight=0, uniform="", minsize=0)
         self._photo_refs.clear()
         self._thumb_frames.clear()
         self._cluster_badge_labels.clear()
