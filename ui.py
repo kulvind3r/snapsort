@@ -41,11 +41,11 @@ from widgets import (
 logger = logging.getLogger("snapsort.ui")
 
 
-class PhotoCullerUI(tk.Tk):
+class PhotoCullerUI(tk.Toplevel):
     """Keyboard-driven side-by-side similarity review window."""
 
-    def __init__(self, organized_folder: str) -> None:
-        super().__init__()
+    def __init__(self, master: tk.Misc, organized_folder: str) -> None:
+        super().__init__(master)
         self.title("SnapSort — Photo Culler")
         self.configure(bg=BG)
         self.geometry("1320x860")
@@ -228,9 +228,9 @@ class PhotoCullerUI(tk.Tk):
         self._current_members = members
         self._current_best = best
         n = len(members)
-        self.stage.grid_columnconfigure(list(range(n)), weight=1, uniform="pane")
+        for col in range(n):
+            self.stage.grid_columnconfigure(col, weight=1, uniform="pane")
         self.stage.grid_rowconfigure(0, weight=1)
-
         for col, metric in enumerate(members):
             is_best = metric is best
             pane_bg = BEST_BG if is_best else PANEL_BG
@@ -248,7 +248,9 @@ class PhotoCullerUI(tk.Tk):
             thumb_frame.pack(padx=4, pady=(2, 4))
             if thumb is not None:
                 self._photo_refs.append(thumb)
-                tk.Label(thumb_frame, image=thumb, bg="#111111").pack()
+                lbl = tk.Label(thumb_frame, image=thumb, bg="#111111")
+                lbl.image = thumb   # prevent GC before Tk renders
+                lbl.pack()
             else:
                 tk.Label(thumb_frame, text="[unavailable]",
                          bg="#111111", fg=DIM, font=("Helvetica", 11)).pack(padx=40, pady=40)
@@ -321,7 +323,8 @@ class PhotoCullerUI(tk.Tk):
         self.progress_label.config(text=f"Issue {self._quality_index + 1} / {total_q}")
         self.progress_bar.configure(maximum=max(1, total_q), value=self._quality_index + 1)
 
-        self.stage.grid_columnconfigure([0, 1], weight=1, uniform="pane")
+        self.stage.grid_columnconfigure(0, weight=1, uniform="pane")
+        self.stage.grid_columnconfigure(1, weight=1, uniform="pane")
         self.stage.grid_rowconfigure(0, weight=1)
 
         # Left: bad photo
@@ -364,7 +367,9 @@ class PhotoCullerUI(tk.Tk):
         thumb_frame.pack(padx=4, pady=(2, 4))
         if thumb:
             self._photo_refs.append(thumb)
-            tk.Label(thumb_frame, image=thumb, bg="#111111").pack()
+            lbl = tk.Label(thumb_frame, image=thumb, bg="#111111")
+            lbl.image = thumb   # prevent GC before Tk renders
+            lbl.pack()
         else:
             tk.Label(thumb_frame, text="[unavailable]", bg="#111111", fg=DIM,
                      font=("Helvetica", 11)).pack(padx=40, pady=40)
@@ -542,8 +547,16 @@ class PhotoCullerUI(tk.Tk):
 # ---------------------------------------------------------------------------
 
 def run_culler(organized_folder: str) -> None:
-    """Launch the culling UI on an organized folder."""
-    PhotoCullerUI(organized_folder).mainloop()
+    """Launch the culling UI on an organized folder (standalone entry point).
+
+    Creates a hidden ``tk.Tk`` root so ``PhotoCullerUI`` (a ``Toplevel``) has
+    exactly one Tcl interpreter. Blocks until the window is closed.
+    """
+    root = tk.Tk()
+    root.withdraw()
+    ui = PhotoCullerUI(root, organized_folder)
+    root.wait_window(ui)
+    root.destroy()
 
 
 def pick_folder_and_run(initial: Optional[str] = None) -> None:
@@ -556,11 +569,12 @@ def pick_folder_and_run(initial: Optional[str] = None) -> None:
         initialdir=initial or str(Path.home()),
         parent=root,
     )
-    root.destroy()
     if chosen:
-        run_culler(chosen)
+        ui = PhotoCullerUI(root, chosen)
+        root.wait_window(ui)
     else:
         logger.info("User cancelled folder selection.")
+    root.destroy()
 
 
 if __name__ == "__main__":

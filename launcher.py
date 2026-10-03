@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import sys
 import threading
 from pathlib import Path
 
@@ -50,6 +51,7 @@ class LauncherUI(tk.Tk):
         self._build()
         self._folder.trace_add("write", lambda *_: self._refresh_buttons())
         self._status.set(f"Ready.   |   Log: {logging_setup.get_log_file()}")
+        self.protocol("WM_DELETE_WINDOW", self._on_quit)
 
     # ------------------------------------------------------------------
     # Layout
@@ -255,16 +257,26 @@ class LauncherUI(tk.Tk):
         folder = self._folder.get().strip()
         if not folder:
             return
-        from ui import run_culler
+        from ui import PhotoCullerUI
         self.withdraw()
         try:
-            run_culler(folder)
+            culler = PhotoCullerUI(self, folder)
+            self.wait_window(culler)      # blocks until culler window closes
         finally:
             self.deiconify()
             self.lift()
             self._status.set(
                 f"Culling session ended.   |   Log: {logging_setup.get_log_file()}"
             )
+
+    # ------------------------------------------------------------------
+    # Shutdown
+    # ------------------------------------------------------------------
+
+    def _on_quit(self) -> None:
+        """Clean shutdown: destroy the window then force-exit the process."""
+        self.destroy()
+        sys.exit(0)
 
 
 def run_launcher() -> None:

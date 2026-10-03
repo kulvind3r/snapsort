@@ -39,24 +39,26 @@ def make_thumbnail(
     """Return a center-cropped, downscaled PhotoImage for display.
 
     Returns None (with a log warning) when the file cannot be decoded.
+    Avoids the context-manager form of Image.open so the file handle and
+    pixel buffer stay alive until after ``ImageTk.PhotoImage`` is built.
     """
     try:
-        with Image.open(path) as img:
-            img.load()
-            if img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            w, h = img.size
-            target_ratio = width / height
-            src_ratio = w / h
-            if src_ratio > target_ratio:
-                new_w = int(h * target_ratio)
-                left = (w - new_w) // 2
-                img = img.crop((left, 0, left + new_w, h))
-            else:
-                new_h = int(w / target_ratio)
-                top = (h - new_h) // 2
-                img = img.crop((0, top, w, top + new_h))
-            img = img.resize((width, height), Image.LANCZOS)
+        src = Image.open(path)
+        src.load()
+        if src.mode not in ("RGB", "L"):
+            src = src.convert("RGB")
+        w, h = src.size
+        target_ratio = width / height
+        src_ratio = w / h
+        if src_ratio > target_ratio:
+            new_w = max(1, int(h * target_ratio))
+            left = (w - new_w) // 2
+            img = src.crop((left, 0, left + new_w, h))
+        else:
+            new_h = max(1, int(w / target_ratio))
+            top = (h - new_h) // 2
+            img = src.crop((0, top, w, top + new_h))
+        img = img.resize((width, height), Image.LANCZOS)
         return ImageTk.PhotoImage(img)
     except Exception:
         logger.warning("Could not render thumbnail for %s", path, exc_info=True)
